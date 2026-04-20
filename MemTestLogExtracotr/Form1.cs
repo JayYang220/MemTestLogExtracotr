@@ -37,6 +37,8 @@ namespace MemTestLogExtracotr
         Regex rx_memTiming = new Regex(@"Current mem timings: (?<speed>\d+) MT/s \((?<timings>.*)\)", RegexOptions.IgnoreCase);
         // 2025-05-09 23:56:50 - Current CPU temperature: 54C
         Regex rx_cpuTemp = new Regex(@"Current CPU temperature: (?<temp>\d+)C", RegexOptions.IgnoreCase);
+        // 2026-03-31 14:45:22 - DIMM0 temperature: 38.500C
+        Regex rx_dimmTemp = new Regex(@"DIMM\d+ temperature: (?<temp>[\d\.]+)C", RegexOptions.IgnoreCase);
         // 2025-05-09 23:56:50 - Starting pass #1 (of 2)
         Regex rx_passStart = new Regex(@"Starting pass #(?<current>\d+) \(of (?<total>\d+)\)", RegexOptions.IgnoreCase);
         // 2025-05-10 00:18:57 - Finished pass #1 (of 2) (Cumulative error count: 0, buffer full count: 0)
@@ -215,7 +217,12 @@ namespace MemTestLogExtracotr
                     }
 
                     string currentTime = DateTime.Now.ToString("yyyyMMdd_HHmmss");
-                    string outputPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, $"{currentTime}_output.csv");
+                    string outputDir = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "output");
+                    if (!System.IO.Directory.Exists(outputDir))
+                    {
+                        System.IO.Directory.CreateDirectory(outputDir);
+                    }
+                    string outputPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "output", $"{currentTime}_output.csv");
                     ToCSV(summaryListLocal, outputPath);
                     return (Summaries: summaryListLocal, OutputPath: outputPath);
                 });
@@ -231,6 +238,7 @@ namespace MemTestLogExtracotr
                 { 
                     MessageBox.Show($"Processing completed. {targetList.Count} files processed successfully.", "Info", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 }
+                buttonOpenOutputFile.Focus();
             }
             catch (Exception ex)
             {
@@ -334,11 +342,18 @@ namespace MemTestLogExtracotr
                             Debug.WriteLine($"Memory Speed: {testSummary.memSpeed} MT/s, Timings: {testSummary.memTiming}");
                         }
                     }
+                    Match m_dimmTemp = rx_dimmTemp.Match(line);
+                    if (m_dimmTemp.Success)
+                    {
+                        string temp = m_dimmTemp.Groups["temp"].Value;
+                        testSummary.dimmTempList.Add(double.Parse(temp));
+                        Debug.WriteLine($"DIMM Temperature: {temp}C");
+                    }
                     Match m_cpuTemp = rx_cpuTemp.Match(line);
                     if (m_cpuTemp.Success)
                     {
                         string temp = m_cpuTemp.Groups["temp"].Value;
-                        testSummary.cpuTempList.Add(int.Parse(temp));
+                        testSummary.cpuTempList.Add(double.Parse(temp));
                         Debug.WriteLine($"CPU Temperature: {temp}C");
                     }
                     if (testSummary.startTime < 0)
@@ -361,7 +376,6 @@ namespace MemTestLogExtracotr
                             }
                         }
                     }
-
                     Match m_passEnd = rx_passEnd.Match(line);
                     if (m_passEnd.Success) 
                     { 
@@ -369,7 +383,18 @@ namespace MemTestLogExtracotr
                         string total = m_passEnd.Groups["total"].Value;
                         string errorCount = m_passEnd.Groups["errorCount"].Value;
                         string bufferFullCount = m_passEnd.Groups["bufferFullCount"].Value;
+                        testSummary.passLoops = int.Parse(current);
                         Debug.WriteLine($"Finished Pass: {current} of {total}, Cumulative Errors: {errorCount}, Buffer Full Count: {bufferFullCount}");
+                        Match m_date = rx_date.Match(line);
+                        if (m_date.Success)
+                        {
+                            string date = m_date.Groups["date"].Value;
+                            DateTime dt;
+                            if (DateTime.TryParse(date, out dt))
+                            {
+                                testSummary.endTime = (int)(dt - new DateTime(1970, 1, 1)).TotalSeconds;
+                            }
+                        }
                     }
                     Match m_testResult = rx_testResult.Match(line);
                     if (m_testResult.Success)
@@ -380,29 +405,11 @@ namespace MemTestLogExtracotr
                         testSummary.testErrorCount = int.Parse(errorCount);
 
                         Debug.WriteLine($"Test Result: {result}, Errors: {errorCount}");
-                        Match m_date = rx_date.Match(line);
-                        if (m_date.Success) 
-                        { 
-                            string date = m_date.Groups["date"].Value;
-                            DateTime dt;
-                            if (DateTime.TryParse(date, out dt))
-                            {
-                                testSummary.endTime = (int)(dt - new DateTime(1970, 1, 1)).TotalSeconds;
-                                if (testSummary.startTime > 0 && testSummary.endTime > 0)
-                                {
-                                    testSummary.totalTestTime = testSummary.endTime - testSummary.startTime;
-                                    Debug.WriteLine($"Total Test Time: {testSummary.totalTestTime} seconds");
-                                }
-                            }
-                        }
                         break;
                     }
                 }
 
-                if (testSummary.CalculateCpuTempStats())
-                {
-                    Debug.WriteLine($"CPU Temperature(C), AVG: {testSummary.cpuAvgTemp:F2}, MAX: {testSummary.cpuMaxTemp}, MIN: {testSummary.cpuMinTemp}");
-                }
+                Debug.WriteLine($"CPU Temperature(C), AVG: {testSummary.cpuAvgTemp:F2}, MAX: {testSummary.cpuMaxTemp}, MIN: {testSummary.cpuMinTemp}");
 
                 return testSummary;
             }
@@ -417,6 +424,11 @@ namespace MemTestLogExtracotr
                 return null;
             }
         }
+
+        private void buttonClear_Click(object sender, EventArgs e)
+        {
+            textBoxTarget.Clear();
+        }
     }
 
     internal class TestSummary
@@ -428,47 +440,123 @@ namespace MemTestLogExtracotr
         public string memSize { get; set; } = string.Empty;
         public int memSpeed { get; set; } = -1;
         public string memTiming { get; set; } = string.Empty;
-        public double cpuAvgTemp { get; set; } = -1;
-        public double cpuMinTemp { get; set; } = -1;
-        public double cpuMaxTemp { get; set; } = -1;
-        public int totalTestTime { get; set; } = -1;
+        public string dimmAvgTemp
+        {
+            get
+            {
+                if (dimmTempList.Count > 0)
+                {
+                    return dimmTempList.Average().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string dimmMaxTemp
+        {   get
+            {
+                if (dimmTempList.Count > 0)
+                {
+                    return dimmTempList.Max().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string dimmMinTemp
+        {
+            get
+            {
+                if (dimmTempList.Count > 0)
+                {
+                    return dimmTempList.Min().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string cpuAvgTemp {
+            get
+            {
+                if (cpuTempList.Count > 0)
+                {
+                    return cpuTempList.Average().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string cpuMinTemp
+        {
+            get
+            {
+                if (cpuTempList.Count > 0)
+                {
+                    return cpuTempList.Min().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string cpuMaxTemp
+        {
+            get
+            {
+                if (cpuTempList.Count > 0)
+                {
+                    return cpuTempList.Max().ToString("F2");
+                }
+                return "";
+            }
+        }
+        public string totalTestTimeStr
+        {
+            get
+            {
+                if (totalTestTime >= 0)
+                {
+                    TimeSpan ts = TimeSpan.FromSeconds(totalTestTime);
+                    return ts.ToString(@"hh\:mm\:ss");
+                }
+                return "00:00:00";
+            }
+        }
+        public int passLoops { get; set; } = -1;
         public string testResult { get; set; } = string.Empty;
         public int testErrorCount { get; set; } = -1;
 
+
+        // calc variable, not for output
         public int startTime { get; set; } = -1;
         public int endTime { get; set; } = -1;
-        public List<int> cpuTempList { get; set; } = new List<int>();
+        public int totalTestTime
+        {
+            get { 
+                if (startTime > 0 && endTime > 0)
+                {
+                    return endTime - startTime;
+                }
+                return -1;
+            }
+        }
+        public List<double> dimmTempList { get; set; } = new List<double>();
+        public List<double> cpuTempList { get; set; } = new List<double>();
 
         public string errorMessage { get; set; } = string.Empty;
 
         public static string GetTitle()
         {
-            return "File Name, TestDate, MemTest Ver, BIOS Ver, MemorySize(Bytes), MemorySpeed, MemoryTiming, CPU AvgTemp, CPU MinTemp, CPU MaxTemp, TotalTestTime(s), TestResult, TestErrorCount";
+            return "File Name, TestDate, MemTest Ver, BIOS Ver, MemorySize(Bytes), Speed, Timing, DIMM AvgTemp, DIMM MinTemp, DIMM MaxTemp, CPU AvgTemp, CPU MinTemp, CPU MaxTemp, TotalTestTime, Loops, TestResult, TestErrorCount";
         }
 
         public string ToCsv()
         {
+            string msg = string.Empty;
             if (!string.IsNullOrEmpty(errorMessage))
-                return $"{fileName}, ERROR: {errorMessage}";
+                msg = $"{fileName}, ERROR: {errorMessage}";
             else
-                return $"{fileName}, {testDate}, {mVersion}, {biosInfo}, {memSize}, {memSpeed}, {memTiming}, {cpuAvgTemp:F2}, {cpuMinTemp}, {cpuMaxTemp}, {totalTestTime}, {testResult}, {testErrorCount}";
+                msg = $"{fileName}, {testDate}, {mVersion}, {biosInfo}, {memSize}, {memSpeed}, {memTiming}, {dimmAvgTemp}, {dimmMinTemp}, {dimmMaxTemp}, {cpuAvgTemp}, {cpuMinTemp}, {cpuMaxTemp}, {totalTestTimeStr}, {passLoops}, {testResult}, {testErrorCount}";
+            return msg;
         }
 
         public TestSummary(string path)
         {
             fileName = System.IO.Path.GetFileName(path);
-        }
-
-        public bool CalculateCpuTempStats()
-        {
-            if (cpuTempList.Count > 0)
-            {
-                cpuAvgTemp = cpuTempList.Average();
-                cpuMinTemp = cpuTempList.Min();
-                cpuMaxTemp = cpuTempList.Max();
-                return true;
-            }
-            return false;
         }
     }
 }
